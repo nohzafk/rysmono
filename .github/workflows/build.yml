@@ -1,0 +1,97 @@
+name: Build RysMono
+
+# Every push and pull request runs the tests and builds the fonts. A release
+# is published only when dispatched by hand, from fonts built on that run.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline tests
+        run: env -u BASH_ENV python3 tests/test_build.py
+
+  build:
+    runs-on: macos-15
+    defaults:
+      run:
+        shell: bash -euxo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install fontforge
+        run: brew install fontforge
+      - name: Build
+        run: scripts/build.sh "$RUNNER_TEMP/rysmono"
+      - name: Check the built fonts
+        run: RYSMONO_DIST="$RUNNER_TEMP/rysmono" "$RUNNER_TEMP/rysmono/venv/bin/python" tests/test_build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rysmono
+          path: |
+            ${{ runner.temp }}/rysmono/RysMono-*.zip
+            ${{ runner.temp }}/rysmono/RysMono-*.zip.sha256
+          if-no-files-found: error
+
+  release:
+    needs: [tests, build]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Two dispatches of one build number would both pass the tag check;
+    # running them one at a time makes the second one refuse.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash -euxo pipefail {0}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load the lock
+        run: |
+          source font.lock
+          printf '%s\n' "RYSMONO_RELEASE_TAG=$RYSMONO_RELEASE_TAG" \
+            "RYSMONO_ARTIFACT=$RYSMONO_ARTIFACT" >> "$GITHUB_ENV"
+      - name: Refuse an existing release tag
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$RYSMONO_RELEASE_TAG"; then
+            echo "$RYSMONO_RELEASE_TAG exists: bump RYSMONO_BUILD_NUMBER in font.lock" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: rysmono
+          path: dist
+      - name: Write release notes
+        run: |
+          source font.lock
+          (cd dist && shasum -a 256 -c "$RYSMONO_ARTIFACT.sha256")
+          {
+            printf 'RysMono Nerd Font Mono, build %s: ten faces of Rysana Mono %s less its Hangul, patched with Nerd Fonts font-patcher %s.\n\n' \
+              "$RYSMONO_BUILD_NUMBER" "$RYSANA_VERSION" "$PATCHER_VERSION"
+            printf -- '- Source: `rysana-type.zip` %s, SHA-256 `%s`.\n' "$RYSANA_VERSION" "$RYSANA_SHA256"
+            printf -- '- Patcher: Nerd Fonts `FontPatcher.zip` %s, SHA-256 `%s`.\n' "$PATCHER_VERSION" "$PATCHER_SHA256"
+            printf -- '- License: SIL Open Font License 1.1, `OFL.txt` in the zip.\n'
+            printf -- '- Verify the download: `shasum -a 256 -c %s.sha256`.\n' "$RYSMONO_ARTIFACT"
+          } > release-notes.md
+          cat release-notes.md
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RYSMONO_RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: RysMono ${{ env.RYSMONO_RELEASE_TAG }}
+          body_path: release-notes.md
+          files: |
+            dist/${{ env.RYSMONO_ARTIFACT }}
+            dist/${{ env.RYSMONO_ARTIFACT }}.sha256
+          fail_on_unmatched_files: true
+          make_latest: true
