@@ -74,4 +74,5 @@ so bump `RYSMONO_BUILD_NUMBER` with it.
 ## License
 
 The fonts are under the SIL Open Font License 1.1, as Rysana Mono is;
-`OFL.txt` ships in the zip.
+`OFL.txt` ships in the zip. The build scripts are under the MIT License
+(`LICENSE`).
